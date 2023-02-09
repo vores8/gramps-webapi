@@ -22,10 +22,9 @@
 
 
 import json
-import os
 from hashlib import sha256
 from http import HTTPStatus
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import gramps
 import jsonschema
@@ -34,6 +33,7 @@ from gramps.gen.const import GRAMPS_LOCALE as glocale
 from gramps.gen.db import KEY_TO_CLASS_MAP, DbTxn
 from gramps.gen.db.base import DbReadBase, DbWriteBase
 from gramps.gen.db.dbconst import TXNADD, TXNDEL, TXNUPD
+#from gramps.gen.display.name import NameDisplay, _PREFIX_IN_LIST, _SURNAME_IN_LIST, _CONNECTOR_IN_LIST
 from gramps.gen.display.name import NameDisplay
 from gramps.gen.display.place import PlaceDisplay
 from gramps.gen.errors import HandleError
@@ -54,10 +54,8 @@ from gramps.gen.lib import (
 )
 from gramps.gen.lib.primaryobj import BasicPrimaryObject as GrampsObject
 from gramps.gen.lib.serialize import from_json, to_json
-from gramps.gen.plug import BasePluginManager
 from gramps.gen.relationship import get_relationship_calculator
 from gramps.gen.soundex import soundex
-from gramps.gen.user import User
 from gramps.gen.utils.db import (
     get_birth_or_fallback,
     get_death_or_fallback,
@@ -69,8 +67,10 @@ from gramps.gen.utils.grampslocale import GrampsLocale
 from gramps.gen.utils.id import create_id
 from gramps.gen.utils.place import conv_lat_lon
 
-from ...const import DISABLED_IMPORTERS, SEX_FEMALE, SEX_MALE, SEX_UNKNOWN
-from ...types import FilenameOrPath, Handle
+from gramps.gen.lib.nameorigintype import NameOriginType
+
+from ...const import SEX_FEMALE, SEX_MALE, SEX_UNKNOWN
+from ...types import Handle
 from ..media import MediaHandler
 
 pd = PlaceDisplay()
@@ -410,14 +410,44 @@ def get_person_profile_for_object(
                     .format(precision=3, dlocale=locale)
                     .strip("()")
                 )
+
+
+    name_given = name_display.display_given(person)
+    name_surname = ""
+# DKDK
+    if not name_display.get_pat_as_surn() :
+        totalsurn = ""
+        for surn in person.primary_name.get_surname_list() :
+            if surn.origintype == NameOriginType.PATRONYMIC :
+                name_given = name_given + " " + surn.get_surname()
+            else:
+                partsurn = surn.get_surname()
+                if surn.get_prefix():
+                    fsurn = _('%(first)s %(second)s') % {'first': surn.get_prefix(),
+                                                        'second': partsurn}
+                else:
+                    fsurn = partsurn
+                fsurn = fsurn.strip()
+                if surn.get_connector():
+                    fsurn = _('%(first)s %(second)s') % {'first': fsurn,
+                                                        'second': surn.get_connector()}
+                fsurn = fsurn.strip()
+                totalsurn = _('%(first)s %(second)s') % {'first': totalsurn,
+                                                        'second': fsurn}
+        name_surname = totalsurn.strip()
+    else:
+        name_surname = person.primary_name.get_surname()
+
     profile = {
         "handle": person.handle,
         "gramps_id": person.gramps_id,
         "sex": get_sex_profile(person),
         "birth": birth,
         "death": death,
-        "name_given": name_display.display_given(person),
-        "name_surname": person.primary_name.get_surname(),
+        "name_given": name_given,
+        "name_surname": name_surname,
+        # "name_given": name_display.display_given(person) + patronymic_name,
+        # "name_surname": person.primary_name.get_surname(),
     }
     if "all" in args or "span" in args:
         options.append("span")
@@ -781,7 +811,7 @@ def has_gramps_id(
 
 
 def add_object(
-    db_handle: DbWriteBase,
+    db_handle: DbWriteBase,git commit
     obj: GrampsObject,
     trans: DbTxn,
     fail_if_exists: bool = False,
@@ -794,6 +824,9 @@ def add_object(
     In the case of a family object, also updates the referenced handles
     in the corresponding person objects.
     """
+
+    print("ADD_OBJECT--------------------------------------------")
+
     if db_handle.readonly:
         # adding objects is forbidden on a read-only db!
         abort(HTTPStatus.FORBIDDEN)
@@ -1131,41 +1164,3 @@ def get_one_relationship(
     return calc.get_one_relationship(
         db_handle, person1, person2, extra_info=True, olocale=locale
     )
-
-
-def get_importers(extension: str = None):
-    """Extract and return list of importers."""
-    importers = []
-    plugin_manager = BasePluginManager.get_instance()
-    for plugin in plugin_manager.get_import_plugins():
-        if extension is not None and extension != plugin.get_extension():
-            continue
-        if extension in DISABLED_IMPORTERS:
-            continue
-        importer = {
-            "name": plugin.get_name(),
-            "description": plugin.get_description(),
-            "extension": plugin.get_extension(),
-            "module": plugin.get_module_name(),
-        }
-        importers.append(importer)
-    return importers
-
-
-def run_import(
-    db_handle: DbReadBase,
-    file_name: FilenameOrPath,
-    extension: str,
-    delete: bool = True,
-) -> None:
-    """Import a file."""
-    plugin_manager = BasePluginManager.get_instance()
-    for plugin in plugin_manager.get_import_plugins():
-        if extension == plugin.get_extension():
-            import_function = plugin.get_import_function()
-            result = import_function(db_handle, str(file_name), User())
-            if delete:
-                os.remove(file_name)
-            if not result:
-                abort(500)
-            return
